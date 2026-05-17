@@ -1,53 +1,120 @@
 #!/usr/bin/env python3
 """
 Скрипт для обнаружения рук и отрисовки landmarks в реальном времени
-с использованием OpenCV и MediaPipe Hands.
+с использованием OpenCV и MediaPipe Hands (новый API).
 
 Требования:
-    pip install opencv-python mediapipe==0.10.9
+    pip install opencv-python mediapipe
     
-Версия MediaPipe 0.10.9 использует стабильный классический API.
-Более новые версии (0.11+) требуют загрузки моделей и имеют другой API.
+Поддерживает MediaPipe 0.10.30+ с новым API через tasks.python.vision
 """
 
 import cv2
 import mediapipe as mp
+from mediapipe.tasks.python import vision, BaseOptions
+from mediapipe.tasks.python.vision import HandLandmarker, HandLandmarkerOptions, RunningMode
 import sys
+import os
 
 
-def check_mediapipe_version():
-    """Проверка совместимости версии MediaPipe."""
-    import re
-    version = mp.__version__
-    match = re.match(r'(\d+)\.(\d+)', version)
-    if match:
-        major, minor = int(match.group(1)), int(match.group(2))
-        if major == 0 and minor <= 10:
-            return True, version
-        elif major >= 1 or (major == 0 and minor >= 11):
-            return False, version
-    return None, version
+def create_hand_landmarker():
+    """Создание детектора рук с использованием нового API."""
+    try:
+        # Пытаемся найти модель hand_landmarker.task
+        model_path = None
+        
+        # Пытаемся найти модель в стандартных расположениях
+        possible_paths = [
+            os.path.join(os.path.dirname(mp.__file__), "data", "hand_landmarker.task"),
+            os.path.join(os.path.dirname(mp.__file__), "tasks", "python", "vision", "data", "hand_landmarker.task"),
+            os.path.join(os.path.dirname(mp.__file__), "tasks", "vision", "data", "hand_landmarker.task"),
+            "/usr/local/lib/python3.12/site-packages/mediapipe/data/hand_landmarker.task",
+            "/usr/local/lib/python3.12/site-packages/mediapipe/tasks/python/vision/data/hand_landmarker.task",
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                model_path = path
+                print(f"Модель найдена: {model_path}")
+                break
+        
+        if model_path is None:
+            # Если модель не найдена локально, используем URL для загрузки
+            # MediaPipe автоматически загрузит модель при первом использовании
+            print("Локальная модель не найдена. Будет использована модель по умолчанию.")
+            print("При первом запуске может потребоваться загрузка модели из интернета.")
+            base_options = BaseOptions(model_asset_path="")
+        else:
+            base_options = BaseOptions(model_asset_path=model_path)
+        
+        options = HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=RunningMode.IMAGE,  # Используем IMAGE mode для простоты
+            num_hands=2,
+            min_hand_detection_confidence=0.5,
+            min_hand_presence_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        
+        return HandLandmarker.create_from_options(options)
+    except Exception as e:
+        print(f"Ошибка при создании HandLandmarker: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def draw_landmarks(frame, hand_landmarks_list, connections_list):
+    """Отрисовка landmarks и соединений на кадре."""
+    import numpy as np
+    
+    h, w = frame.shape[:2]
+    
+    for idx, hand_landmarks in enumerate(hand_landmarks_list):
+        if idx < len(connections_list):
+            connections = connections_list[idx]
+            
+            # Отрисовка точек (landmarks)
+            for landmark in hand_landmarks:
+                x = int(landmark.x * w)
+                y = int(landmark.y * h)
+                
+                # Рисуем круги для каждой точки
+                cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
+            
+            # Отрисовка соединений между точками
+            for connection in connections:
+                start_idx = connection[0]
+                end_idx = connection[1]
+                
+                if start_idx < len(hand_landmarks) and end_idx < len(hand_landmarks):
+                    start_point = (
+                        int(hand_landmarks[start_idx].x * w),
+                        int(hand_landmarks[start_idx].y * h)
+                    )
+                    end_point = (
+                        int(hand_landmarks[end_idx].x * w),
+                        int(hand_landmarks[end_idx].y * h)
+                    )
+                    
+                    cv2.line(frame, start_point, end_point, (0, 255, 255), 2)
+
+
+# Стандартные соединения для рук MediaPipe
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),      # Большой палец
+    (0, 5), (5, 6), (6, 7), (7, 8),      # Указательный палец
+    (0, 9), (9, 10), (10, 11), (11, 12), # Средний палец
+    (0, 13), (13, 14), (14, 15), (15, 16), # Безымянный палец
+    (0, 17), (17, 18), (18, 19), (19, 20), # Мизинец
+    (5, 9), (9, 13), (13, 17)            # Соединения между пальцами у основания
+]
 
 
 def main():
-    # Проверка версии MediaPipe
-    is_compatible, version = check_mediapipe_version()
-    
-    if is_compatible is False:
-        print(f"Предупреждение: Версия MediaPipe {version} может быть несовместима.")
-        print("Рекомендуется установить версию 0.10.9:")
-        print("  pip install mediapipe==0.10.9")
-        print("Продолжение работы с текущей версией...\n")
-    
-    # Инициализация MediaPipe Hands (классический API)
-    try:
-        mp_hands = mp.solutions.hands
-        mp_drawing = mp.solutions.drawing_utils
-        mp_drawing_styles = mp.solutions.drawing_styles
-    except AttributeError as e:
-        print(f"Ошибка: Не удалось импортировать модули MediaPipe: {e}")
-        print("Убедитесь, что установлена корректная версия: pip install mediapipe==0.10.9")
-        sys.exit(1)
+    print(f"MediaPipe версия: {mp.__version__}")
+    print("Использование нового API (tasks.python.vision)")
+    print()
 
     # Открываем камеру (0 - основная камера)
     cap = cv2.VideoCapture(0)
@@ -60,14 +127,16 @@ def main():
 
     print("Камера успешно открыта. Нажмите 'q' для выхода.")
 
-    # Создаем объект Hands с настройками
-    with mp_hands.Hands(
-        static_image_mode=False,  # Режим видео (быстрее)
-        max_num_hands=2,          # Максимальное количество рук для обнаружения
-        min_detection_confidence=0.5,  # Минимальная уверенность детекции
-        min_tracking_confidence=0.5    # Минимальная уверенность трекинга
-    ) as hands:
+    # Создаем детектор рук
+    landmarker = create_hand_landmarker()
+    
+    if landmarker is None:
+        print("Не удалось создать детектор рук.")
+        print("Попробуйте переустановить mediapipe: pip install --force-reinstall mediapipe")
+        cap.release()
+        sys.exit(1)
 
+    try:
         while True:
             # Чтение кадра с камеры
             ret, frame = cap.read()
@@ -82,23 +151,19 @@ def main():
             # Конвертация BGR в RGB (MediaPipe работает с RGB)
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+            # Создание объекта Image для MediaPipe
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+
             # Обработка изображения и обнаружение рук
-            results = hands.process(rgb_frame)
+            detection_result = landmarker.detect(mp_image)
 
             # Если руки обнаружены
-            if results.multi_hand_landmarks:
-                for hand_landmarks in results.multi_hand_landmarks:
-                    # Отрисовка landmarks и связей
-                    mp_drawing.draw_landmarks(
-                        frame,
-                        hand_landmarks,
-                        mp_hands.HAND_CONNECTIONS,
-                        mp_drawing_styles.get_default_hand_landmarks_style(),
-                        mp_drawing_styles.get_default_hand_connections_style()
-                    )
+            if detection_result.hand_landmarks:
+                draw_landmarks(frame, detection_result.hand_landmarks, 
+                             [HAND_CONNECTIONS] * len(detection_result.hand_landmarks))
 
             # Добавление текста с информацией
-            num_hands = len(results.multi_hand_landmarks) if results.multi_hand_landmarks else 0
+            num_hands = len(detection_result.hand_landmarks) if detection_result.hand_landmarks else 0
             cv2.putText(
                 frame,
                 f"Hands detected: {num_hands}",
@@ -116,10 +181,12 @@ def main():
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
-    # Освобождение ресурсов
-    cap.release()
-    cv2.destroyAllWindows()
-    print("Программа завершена.")
+    finally:
+        # Освобождение ресурсов
+        landmarker.close()
+        cap.release()
+        cv2.destroyAllWindows()
+        print("Программа завершена.")
 
 
 if __name__ == "__main__":
