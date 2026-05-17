@@ -1,0 +1,1 @@
+Nothing needs to be added to .gitignore since only a Python source file (`hand_tracking.py`) was modified and there are no build artifacts, dependencies, or temporary files in the changes.
