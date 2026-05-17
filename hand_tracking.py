@@ -2,6 +2,12 @@
 """
 Скрипт для обнаружения рук и отрисовки landmarks в реальном времени
 с использованием OpenCV и MediaPipe Hands.
+
+Требования:
+    pip install opencv-python mediapipe==0.10.9
+    
+Версия MediaPipe 0.10.9 использует стабильный классический API.
+Более новые версии (0.11+) требуют загрузки моделей и имеют другой API.
 """
 
 import cv2
@@ -9,11 +15,39 @@ import mediapipe as mp
 import sys
 
 
+def check_mediapipe_version():
+    """Проверка совместимости версии MediaPipe."""
+    import re
+    version = mp.__version__
+    match = re.match(r'(\d+)\.(\d+)', version)
+    if match:
+        major, minor = int(match.group(1)), int(match.group(2))
+        if major == 0 and minor <= 10:
+            return True, version
+        elif major >= 1 or (major == 0 and minor >= 11):
+            return False, version
+    return None, version
+
+
 def main():
-    # Инициализация MediaPipe Hands
-    mp_hands = mp.solutions.hands
-    mp_drawing = mp.solutions.drawing_utils
-    mp_drawing_styles = mp.solutions.drawing_styles
+    # Проверка версии MediaPipe
+    is_compatible, version = check_mediapipe_version()
+    
+    if is_compatible is False:
+        print(f"Предупреждение: Версия MediaPipe {version} может быть несовместима.")
+        print("Рекомендуется установить версию 0.10.9:")
+        print("  pip install mediapipe==0.10.9")
+        print("Продолжение работы с текущей версией...\n")
+    
+    # Инициализация MediaPipe Hands (классический API)
+    try:
+        mp_hands = mp.solutions.hands
+        mp_drawing = mp.solutions.drawing_utils
+        mp_drawing_styles = mp.solutions.drawing_styles
+    except AttributeError as e:
+        print(f"Ошибка: Не удалось импортировать модули MediaPipe: {e}")
+        print("Убедитесь, что установлена корректная версия: pip install mediapipe==0.10.9")
+        sys.exit(1)
 
     # Открываем камеру (0 - основная камера)
     cap = cv2.VideoCapture(0)
