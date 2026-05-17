@@ -37,7 +37,7 @@ class HandTracker:
         options = vision.HandLandmarkerOptions(
             base_options=base_options,
             running_mode=vision.RunningMode.LIVE_STREAM,
-            num_hands=2,  # Разрешаем детектить до 2 рук
+            num_hands=2,
             min_hand_detection_confidence=0.7,
             min_hand_presence_confidence=0.7,
             min_tracking_confidence=0.5,
@@ -51,7 +51,6 @@ class HandTracker:
             sys.exit(1)
 
     def _on_results(self, result, output_image, timestamp_ms):
-        """Callback для получения результатов в отдельном потоке"""
         with self.lock:
             if result.hand_landmarks:
                 self.current_landmarks = result.hand_landmarks
@@ -61,21 +60,16 @@ class HandTracker:
     def process_frame(self, frame, gesture_controller):
         h, w, _ = frame.shape
         
-        # Конвертация для MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         timestamp_ms = int(time.time() * 1000)
         
-        # Асинхронная детекция
         self.detector.detect_async(mp_image, timestamp_ms)
-        
-        # Отрисовка и логика жестов
         self._draw_and_process(frame, h, w, gesture_controller)
         
         return frame
 
     def _get_palm_center(self, landmarks, w, h):
-        """Вычисляет средний центр ладони по опорным точкам"""
         x_sum, y_sum = 0.0, 0.0
         count = 0
         
@@ -97,10 +91,9 @@ class HandTracker:
         if not landmarks_list:
             return
 
-        # Проходим по ВСЕМ обнаруженным рукам
         for hand_idx, hand_landmarks in enumerate(landmarks_list):
             
-            # 1. Отрисовка скелета для каждой руки
+            # Отрисовка скелета
             for idx_start, idx_end in HAND_CONNECTIONS:
                 lm_start = hand_landmarks[idx_start]
                 lm_end = hand_landmarks[idx_end]
@@ -114,24 +107,42 @@ class HandTracker:
                 pt = (int(lm.x * w), int(lm.y * h))
                 cv2.circle(frame, pt, 4, (0, 0, 255), -1)
 
-            # 2. Вычисление центра и обработка жеста
-            # Для управления используем только первую руку (индекс 0), 
-            # чтобы избежать конфликтов сигналов, но рисуем обе.
+            # Логика управления (только первая рука)
             if hand_idx == 0:
                 center_x, center_y = self._get_palm_center(hand_landmarks, w, h)
                 
                 if center_x is not None and center_y is not None:
-                    # Нормализация координат для контроллера (0.0 - 1.0)
                     norm_x = center_x / w
                     norm_y = center_y / h
                     
-                    # Получение результата жеста
+                    # 1. Обработка свайпов
                     gesture = gesture_controller.add_coordinate(norm_x, norm_y)
                     
-                    # Логирование в консоль (можно убрать в продакшене)
+                    # 2. Обработка ЗУМА (новая логика)
+                    landmarks_data = [(lm.x, lm.y, lm.z) for lm in hand_landmarks]
+                    zoom_state = gesture_controller.process_gesture(landmarks=landmarks_data, palm_y=norm_y)
+                    
+                    # Визуализация и логирование
+                    status_text = ""
+                    color = (255, 255, 255)
+                    
                     if gesture != 'NONE':
+                        status_text = f"Swipe: {gesture}"
+                        color = (0, 255, 0)
                         print(f"Gesture detected: {gesture}")
-                        # TODO: Добавить логику действий здесь
+                    
+                    elif zoom_state != 'IDLE':
+                        status_text = f"ZOOM: {zoom_state}"
+                        color = (0, 255, 255) # Желтый для зума
+                        print(f"Zoom state: {zoom_state}")
+                    elif gesture_controller.zoom_mode:
+                        # Если режим зума активен, но рука в нейтральной зоне
+                        status_text = "ZOOM MODE (HOLD)"
+                        color = (255, 165, 0) # Оранжевый
+
+                    if status_text:
+                        cv2.putText(frame, status_text, (10, 30), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
     def close(self):
         if hasattr(self, 'detector'):
@@ -141,15 +152,15 @@ class HandTracker:
 def main():
     model_file = "hand_landmarker.task"
     
-    # Инициализация трекера
     tracker = HandTracker(model_file)
     
-    # Инициализация контроллера жестов
     gesture_controller = GestureController(
         buffer_size=15,
         x_threshold=0.15,
         y_threshold=0.05,
-        cooldown_frames=30
+        cooldown_frames=30,
+        pinch_threshold=0.05,      # Порог смыкания пальцев
+        pinch_stability_frames=5   # ~0.08 сек задержка для защиты от шума
     )
     
     cap = cv2.VideoCapture(0)
@@ -158,10 +169,14 @@ def main():
         tracker.close()
         sys.exit(1)
 
-    # Оптимизация буфера для минимальной задержки
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
     print("System started. Press 'q' to exit.")
+    print("Controls:")
+    print("- Swipe Left/Right for navigation")
+    print("- Pinch fingers to activate Zoom Mode")
+    print("- Move hand Up/Down while pinching to Zoom In/Out")
+    print("- Release fingers to stop Zooming")
 
     try:
         while True:
